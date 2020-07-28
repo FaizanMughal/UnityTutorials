@@ -28,16 +28,17 @@ public class GunController : MonoBehaviour
     public float crouchADSMultiplier = 0.75f;
 
     float fireTimer = 0;
-    float fireDelayTimer = 0;
+    public float fireDelayTimer = 0;
     float crouchValue = 0f;
-    float bulletSpread = 0.01f;
+    public float bulletSpread = 0.01f;
 
 
     int continuousShots = 0;
     int semiCalculations = 16;
     int putAwayGun = -1;
 
-    bool inputUpped = true;
+    bool onShootUp = false;
+    bool lastInput = false;
     bool shootingGun = false;
     List<int> autoReloadGun;
 
@@ -59,7 +60,6 @@ public class GunController : MonoBehaviour
 
     private void Start()
     {
-        inputUpped = true;
         source = GetComponent<AudioSource>();
         helper = GetComponent<GunControllerHelper>();
 
@@ -71,6 +71,7 @@ public class GunController : MonoBehaviour
         weaponSwaying = GetComponent<HandSway>();
 
         ui = FindObjectOfType<GunControllerUI>();
+        if (ui == null) Debug.LogError("GunControllerUI not found, please add PlayerUI prefab");
         ResetGuns();
     }
 
@@ -85,7 +86,7 @@ public class GunController : MonoBehaviour
         if (gunSelected())
         {
             gunInventory[selectedGun].gameObject.SetActive(true);
-            ui.UpdateGunUI(SelectedGun());
+            if(ui) ui.UpdateGunUI(SelectedGun());
         }
     }
 
@@ -128,17 +129,29 @@ public class GunController : MonoBehaviour
         if (gunHandler)
         {
             GunObject gun = gunHandler.gun;
+            float actualSpread = bulletSpread;
             float spread = CurrentBulletSpread();
             if (isAiming())
             {
                 spread *= gun.aimSpreadMultiplier;
-                bulletSpread = Mathf.Lerp(bulletSpread, spread, Time.deltaTime * gun.aimDownSpeed * (1f - gun.aimDownMultiplier));
+                actualSpread = Mathf.Lerp(actualSpread, spread, Time.deltaTime * gun.aimDownSpeed * (1f - gun.aimDownMultiplier));
             }
-            else 
-                bulletSpread = Mathf.Lerp(bulletSpread, spread, Time.deltaTime * 4f);
+            else
+                actualSpread = Mathf.Lerp(actualSpread, spread, Time.deltaTime * 4f);
+
+            if (gunHandler.gun.canFireWhileDelayed) {
+                float delaySpreadAdjust = (4f - (DelayPercent() * 3f)) / 4f;
+                actualSpread = Mathf.Lerp(gunHandler.gun.bulletSpread, (spread * delaySpreadAdjust), DelayPercent());
+            }
+            bulletSpread = actualSpread;
         }
         else
             bulletSpread = 0.01f;
+    }
+
+    float DelayPercent()
+    {
+        return (fireDelayTimer / gunHandler.gun.fireDelay);
     }
 
     float CurrentBulletSpread()
@@ -166,7 +179,7 @@ public class GunController : MonoBehaviour
             return;
         }
 
-        float adjust = (gunCanShoot()) ? Time.deltaTime : -(Time.deltaTime * gunHandler.gun.fireCooldownSpeed);
+        float adjust = (gunCanShoot() && input.shooting) ? Time.deltaTime : -(Time.deltaTime * gunHandler.gun.fireCooldownSpeed);
         fireDelayTimer = Mathf.Clamp(fireDelayTimer + adjust, 0, gunHandler.gun.fireDelay);
     }
 
@@ -189,14 +202,14 @@ public class GunController : MonoBehaviour
 
             AdjustFOV(isAiming());
             gunHandler.AimDownSights(isAiming());
-            ui.SetCrosshair(isAiming() ? 0.01f : bulletSpread, isAiming());
+            if(ui) ui.SetCrosshair(isAiming() ? 0.01f : bulletSpread, isAiming());
             weaponSwaying.SetSwayMultiplier(isAiming() ? gunHandler.gun.aimDownMultiplier : 1f);
         }
         else
         {
             status = GunControlStatus.none;
             weaponSwaying.SetSwayMultiplier(1f);
-            ui.SetCrosshair(0.01f, true);
+            if (ui) ui.SetCrosshair(0.01f, true);
         }
     }
 
@@ -211,25 +224,35 @@ public class GunController : MonoBehaviour
         if (!gunHandler) return false;
         if (gunHandler.status == GunHandler.GunStatus.reloading) return false;
         if (playerBlocking())
-            return (input.shooting && gunHandler.gun.canFireWhileActing);
+            return gunHandler.gun.canFireWhileActing;
         else
-            return input.shooting;
+            return true;
+    }
+
+    void HandleOnShootUp()
+    {
+        if (input.shooting)
+            lastInput = true;
+        else if (lastInput)
+        {
+            onShootUp = true;
+            lastInput = false;
+        }
+        else
+            onShootUp = false;
     }
 
     void FireGunHandler()
     {
-        if (!input.shooting && !inputUpped)
-        {
-            if(gunHandler.gun.shooting != GunObject.ShootType.auto)
-                fireDelayTimer = 0; //Restart the timer if semi or burst
-            inputUpped = true;
-        }
+        GunObject gun = gunHandler.gun;
+        HandleOnShootUp();
+
+        gunHandler.OnDelayCall(fireDelayTimer);
 
         if (fireTimer > 0)
             fireTimer -= Time.deltaTime;
         else if(gunHandler)
         {
-            gunHandler.OnDelayCall(fireDelayTimer);
 
             if (!shootingGun)
             {
@@ -244,21 +267,32 @@ public class GunController : MonoBehaviour
                 }
 
                 if (fireDelayTimer < gunHandler.gun.fireDelay)
-                    return;
+                {
+                    if (!gun.canFireWhileDelayed) return;
+                }
 
                 if (!gunCanShoot())
                     return;
 
-                if (gunHandler.gun.shooting == GunObject.ShootType.auto)
+                if (gun.shooting == GunObject.ShootType.auto && input.shooting)
                 {
                     continuousShots++;
                     FireGun();
                 }
-                else if (inputUpped)
+                else
                 {
-                    continuousShots = 0;
-                    inputUpped = false;
-                    FireGun();
+                    bool fire = false;
+                    if (gun.fireWhenPressedUp)
+                    {
+                        if (onShootUp) fire = true;
+                    }
+                    else if(input.shooting) fire = true;
+
+                    if (fire)
+                    {
+                        continuousShots = 0;
+                        FireGun();
+                    }
                 }
             }
         }
@@ -324,7 +358,7 @@ public class GunController : MonoBehaviour
             putAwayGun = -1;
         }
 
-        ui.UpdateGunUI(gunHandler);
+        if (ui) ui.UpdateGunUI(gunHandler);
         gunHandler.TakeOutWeapon(TakenGunOut);
         gunInventory[selectedGun].gameObject.SetActive(true);
         status = GunControlStatus.takingOut;
@@ -366,7 +400,6 @@ public class GunController : MonoBehaviour
         {
             case GunObject.ShootType.semi:
                 PlayShotSFX();
-                fireDelayTimer = 0; //Restart the timer if semi or burst
                 float addTime = gun.firerate / (float)semiCalculations;
                 StartCoroutine(singleShot());
                 if (!gunHandler.ShootGun())
@@ -382,6 +415,7 @@ public class GunController : MonoBehaviour
                     }
                     shootingGun = false;
                 }
+                fireDelayTimer = 0; //Restart the timer if semi or burst
                 break;
             case GunObject.ShootType.auto:
                 PlayShotSFX();
@@ -393,7 +427,6 @@ public class GunController : MonoBehaviour
                 break;
             case GunObject.ShootType.burst:
                 PlayShotSFX();
-                fireDelayTimer = 0; //Restart the timer if semi or burst
                 float shotTime = gun.burstTime / (float)gun.burstShot;
                 StartCoroutine(burstShot());
                 IEnumerator burstShot()
@@ -413,6 +446,7 @@ public class GunController : MonoBehaviour
                     }
                     shootingGun = false;
                 }
+                fireDelayTimer = 0; //Restart the timer if semi or burst
                 break;
         }
     }
@@ -478,8 +512,14 @@ public class GunController : MonoBehaviour
 
             impactPos = hit.point;
             CreateImpact(impactPos, hit.normal);
-            if(damaged != null) //If we hit something we should damage
-                ui.ShowHitmarker(damaged.Damage(gun.bulletDamage, gun.headshotMult)); //Damages and shows hitmarker
+            if (damaged != null) //If we hit something we should damage
+            {
+                if (!damaged.DamageableAlreadyDead())
+                {
+                    bool killed = damaged.Damage(gun.bulletDamage, gun.headshotMult);
+                    if(ui) ui.ShowHitmarker(killed); //Damages and shows hitmarker
+                }
+            }
         }
 
         Vector3[] pos = { gunHandler.bulletSpawn.transform.position, impactPos };
@@ -511,9 +551,13 @@ public class GunController : MonoBehaviour
 
         ShotHelper shotHelper = null;
         if((shotHelper = bullet as ShotHelper) != null)
-            shotHelper.Initialize(bulletBody, gun.additiveForce, CreateImpact);
+            shotHelper.Initialize(bulletBody, gun, CreateImpact);
 
-        bulletBody.AddForce(worldDir * gun.initialForce, ForceMode.Impulse);
+        float force = gun.initialForce;
+        if (gunHandler.gun.canFireWhileDelayed)
+            force *= DelayPercent();
+
+        bulletBody.AddForce(worldDir * force, ForceMode.Impulse);
     }
 
     void ApplyRecoil(float overTime)
@@ -558,7 +602,7 @@ public class GunController : MonoBehaviour
         dmgImpact.Damage = gun.bulletDamage;
         int simulation = dmgImpact.Simulate();
 
-        if (simulation < 0) return;
+        if (simulation < 0 || !ui) return;
         ui.ShowHitmarker(simulation > 0); //Damages and shows hitmarker
     }
 
@@ -589,7 +633,6 @@ public class GunController : MonoBehaviour
         }
     }
 
-#if UNITY_EDITOR
     [ExecuteInEditMode]
     void RemoveBlanks()
     {
@@ -611,11 +654,16 @@ public class GunController : MonoBehaviour
             gunInventory[i].gunIndex = i;
     }
 
+#if UNITY_EDITOR
     static readonly string playerPrefabPath = "Assets/_FPS Shooting/ShooterPlayer.prefab";
     //Return the GunHandler if we already have the gun, otherwise return null
     [ExecuteInEditMode]
     public void AddGun(GunObject addGun)
     {
+        if (Application.isPlaying){
+            Debug.LogWarning("ONLY CALL THIS OUTSIDE OF PLAY");
+            return;
+        }
         RemoveBlanks();
         //Find where to place this gun
         PrefabHandler playerPrefab = new PrefabHandler(FindObjectOfType<PlayerController>().transform, playerPrefabPath);
@@ -689,6 +737,73 @@ public class GunController : MonoBehaviour
 
         playerPrefab.RecreatePrefab();
     }
+#endif
+
+    public void AddGunTemporarily(GunObject addGun) //Will not change the prefab, this should be called if the game is running
+    {
+        RemoveBlanks();
+        //Find where to place this gun
+        GunHandler handler = gunInventory.Find(x => x.gun.GetHashCode() == addGun.GetHashCode());
+        if (handler == null) //If we did not find a handler with the gun using the gun name
+        {
+            GameObject gunParent = new GameObject();
+            gunParent.transform.name = addGun.prefabName;
+            gunParent.transform.SetParent(this.transform);
+            TransformHelper.ResetLocalTransform(gunParent.transform);
+
+            Animator ani = gunParent.AddComponent(typeof(Animator)) as Animator;
+            if (addGun.animationController != null)
+                ani.runtimeAnimatorController = addGun.animationController;
+
+            handler = gunParent.AddComponent(typeof(GunHandler)) as GunHandler;
+
+            handler.gun = addGun;
+            handler.handIKTarget = new GameObject().transform;
+            handler.handIKTarget.name = "IK_Hand";
+            handler.handIKTarget.SetParent(gunParent.transform);
+            TransformHelper.SetLocalTransformData(handler.handIKTarget, addGun.IK_HandTarget);
+
+            gunInventory.Add(handler);
+            handler.gunIndex = gunInventory.Count - 1;
+        }
+        else
+        {
+            Debug.Log("Already have gun named : " + addGun.prefabName + " [UPDATING GUN]");
+
+            handler.transform.SetParent(this.transform);
+            TransformHelper.ResetLocalTransform(handler.transform);
+
+            if (addGun.animationController != null)
+            {
+                Animator ani = handler.gameObject.GetComponent<Animator>();
+                ani.runtimeAnimatorController = addGun.animationController;
+            }
+
+            handler.gun = addGun;
+            handler.handIKTarget.SetParent(handler.transform.parent);
+            TransformHelper.DeleteAllChildren(handler.transform);
+            handler.handIKTarget.SetParent(handler.transform);
+            TransformHelper.SetLocalTransformData(handler.handIKTarget, addGun.IK_HandTarget);
+        }
+
+        if (addGun.prefabObj != null)
+            CreateGunPrefab(handler);
+        if (addGun.animationController != null)
+            handler.SetAnimations(addGun.gunMotions);
+
+        handler.SetAmmo();
+        handler.bulletSpawn = handler.gameObject.GetComponentInChildren<GunBulletSpawn>();
+        helper.InitializeGun(handler);
+        handler.gameObject.SetActive(false);
+
+        //Swap to new gun
+        putAwayGun = selectedGun;
+        source.Stop(); //Stop reloading SFX if playing
+        fireDelayTimer = 0; //Reset the fire delay
+        SelectedGun().PutAwayWeapon(() => TakeOutSelectedGun());
+        selectedGun = handler.gunIndex;
+        status = GunControlStatus.swapping;
+    }
 
     [ExecuteInEditMode]
     void CreateGunPrefab(GunHandler handler)
@@ -697,5 +812,4 @@ public class GunController : MonoBehaviour
         gun.transform.SetParent(handler.transform);
         TransformHelper.SetLocalTransformData(gun.transform, handler.gun.prefabLocalData);
     }
-#endif
 }

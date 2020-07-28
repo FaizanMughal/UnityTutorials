@@ -37,8 +37,10 @@ public class GunObject : ScriptableObject
     public float fireDelay = 0f; //0 to shoot instantly
     [Range(0f, 2f)]
     public float fireCooldownSpeed = 1f; //speed in which the gun cools down
+    public bool canFireWhileDelayed = false; //Shoot while delay is active (affects spread)
     public bool looseAmmoOnReload = false;
     public bool canFireWhileActing = true;
+    public bool fireWhenPressedUp = false; //Only for burst and semi
 
     //[Header("Aim Variables")]
     public float aimFOV = 60f;
@@ -84,6 +86,13 @@ public class GunObject : ScriptableObject
     {
         if (shootClips.Length == 0) return null;
         return shootClips[Random.Range(0, shootClips.Length)];
+    }
+
+    public void AddTempGunToPlayer() //The difference here is that it will not change the ArmIk or Prefab varaibles
+    {
+        GunController controller = null;
+        if ((controller = FindObjectOfType<GunController>()) != null)
+            controller.AddGunTemporarily(this);
     }
 
 #if UNITY_EDITOR
